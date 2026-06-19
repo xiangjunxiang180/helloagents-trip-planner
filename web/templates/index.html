@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>小途 · 智能旅行助手</title>
     <link rel="stylesheet" href="/static/style.css">
-    <!-- marked.js: 客户端 Markdown 渲染 -->
+    <!-- Leaflet 地图 -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- SortableJS 拖拽 -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <!-- marked.js Markdown 渲染 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
@@ -17,44 +22,82 @@
             <div class="title">小途 · 智能旅行助手</div>
             <div class="subtitle">AI-Powered Travel Assistant</div>
         </div>
-        <button class="reset-btn" id="resetBtn">🔄 新的旅程</button>
+        <button class="header-btn" id="resetBtn">🔄 新旅程</button>
+        <button class="header-btn" id="toggleMapBtn">🗺️ 地图/行程</button>
     </header>
 
-    <!-- ===== Chat Container ===== -->
-    <div class="chat-container" id="chatContainer">
+    <!-- ===== Main Layout ===== -->
+    <div class="main-layout">
 
-        <!-- Welcome Card -->
-        <div class="welcome" id="welcomeCard">
-            <div class="welcome-icon">🌍</div>
-            <h2>你好！我是小途，你的智能旅行助手 ✈️</h2>
-            <p>我可以查询天气、搜索目的地美图、规划详细行程。<br>试着告诉我你的旅行想法吧～</p>
-            <div class="quick-actions">
-                <button class="quick-btn">🏖️ 三亚3天度假行程</button>
-                <button class="quick-btn">🏔️ 丽江大理5天深度游</button>
-                <button class="quick-btn">🍜 成都美食之旅4天</button>
-                <button class="quick-btn">🏯 西安历史文化3日游</button>
+        <!-- Left: Chat Panel -->
+        <div class="chat-panel" id="chatPanel">
+            <div class="chat-container" id="chatContainer">
+                <div class="welcome" id="welcomeCard">
+                    <div class="welcome-icon">🌍</div>
+                    <h2>你好！我是小途 ✈️</h2>
+                    <p>查询天气 · 搜索美图 · 规划行程 · 地图标注</p>
+                    <div class="quick-actions">
+                        <button class="quick-btn">🏖️ 三亚3天度假行程</button>
+                        <button class="quick-btn">🏔️ 丽江大理5天深度游</button>
+                        <button class="quick-btn">🍜 成都美食之旅4天</button>
+                        <button class="quick-btn">🏯 西安历史文化3日游</button>
+                    </div>
+                </div>
+            </div>
+            <div class="input-area">
+                <textarea id="messageInput" rows="1" placeholder="输入旅行需求，如「杭州3天行程」..."></textarea>
+                <button id="sendBtn" title="发送 (Enter)">➤</button>
+            </div>
+        </div>
+
+        <!-- Right: Map + Itinerary Editor -->
+        <div class="map-panel" id="mapPanel">
+            <!-- Map -->
+            <div class="map-wrapper" id="mapWrapper">
+                <div id="mapContainer"></div>
+                <div class="map-placeholder" id="mapPlaceholder">
+                    <div class="map-placeholder-icon">🗺️</div>
+                    <p>规划行程后，景点将标注在地图上</p>
+                    <p class="sub">试试说「帮我规划一个3天北京行程」</p>
+                </div>
+            </div>
+            <!-- Itinerary Editor -->
+            <div class="itinerary-editor" id="itineraryEditor">
+                <div class="itinerary-header">
+                    <span class="itinerary-title">📋 行程编辑器</span>
+                    <span class="itinerary-hint">拖拽调整顺序 · 点击 × 删除</span>
+                    <button class="add-spot-btn" id="addSpotBtn" title="添加景点">+ 添加景点</button>
+                </div>
+                <div class="itinerary-body" id="itineraryBody">
+                    <div class="itinerary-empty" id="itineraryEmpty">
+                        <p>暂无行程数据</p>
+                        <p class="sub">在聊天中规划行程后，这里将显示可编辑的景点列表</p>
+                    </div>
+                </div>
+                <div class="itinerary-footer" id="itineraryFooter" style="display:none;">
+                    <input type="text" id="newSpotInput" placeholder="输入新景点名称，回车添加">
+                    <button id="confirmAddBtn">添加</button>
+                </div>
             </div>
         </div>
 
     </div>
 
-    <!-- ===== Loading (global template for clone) ===== -->
-    <!-- loaded dynamically via JS -->
-
-    <!-- ===== Input Area ===== -->
-    <div class="input-area">
-        <textarea id="messageInput" rows="1" placeholder="输入你的旅行需求，比如「杭州3天行程，先看看天气」..."></textarea>
-        <button id="sendBtn" title="发送 (Enter)">➤</button>
-    </div>
-
-    <!-- ===== Footer ===== -->
-    <div class="footer">
-        🌤️ 高德天气 · 📸 Unsplash 图片 · 🤖 通义千问 AI 规划
-    </div>
-
     <!-- ===== Image Lightbox ===== -->
     <div class="image-modal" id="imageModal">
-        <img id="modalImg" src="" alt="目的地实景照片">
+        <img id="modalImg" src="" alt="">
+    </div>
+
+    <!-- ===== Add Spot Modal ===== -->
+    <div class="spot-modal" id="spotModal">
+        <div class="spot-modal-content">
+            <h3>添加景点</h3>
+            <input type="text" id="spotModalInput" placeholder="输入景点名称，如「故宫博物院」">
+            <div class="spot-modal-actions">
+                <button class="btn-cancel" id="spotModalCancel">取消</button>
+                <button class="btn-confirm" id="spotModalConfirm">添加</button>
+            </div>
+        </div>
     </div>
 
     <!-- ===== JS ===== -->

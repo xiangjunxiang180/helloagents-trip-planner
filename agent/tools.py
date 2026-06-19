@@ -1,14 +1,23 @@
 """
 工具层：智能旅行助手可调用的所有外部工具。
 
-包含三个核心工具：
+包含五个核心工具：
 1. get_weather       — 通过高德地图 API 获取目标城市天气
 2. search_destination_images — 通过 Unsplash API 搜索目的地精美图片
-3. generate_itinerary — 基于用户偏好生成每日行程计划（纯 LLM 工具）
+3. generate_itinerary — 基于用户偏好生成每日行程计划（自动含景点坐标）
+4. geocode_poi       — 将地点名称转为经纬度坐标
+5. search_attractions — 搜索城市热门景点及坐标
 """
 
 import requests
 import config
+
+
+def _api_session() -> requests.Session:
+    """创建绕过系统代理的 Session，避免公司/VPN 代理干扰 API 调用"""
+    s = requests.Session()
+    s.trust_env = False
+    return s
 
 
 def get_weather(city_name: str, extensions: str = "base") -> dict:
@@ -28,7 +37,7 @@ def get_weather(city_name: str, extensions: str = "base") -> dict:
             "city": city_name,
             "extensions": extensions,
         }
-        resp = requests.get(config.AMAP_WEATHER_URL, params=params, timeout=10)
+        resp = _api_session().get(config.AMAP_WEATHER_URL, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
@@ -94,7 +103,7 @@ def search_destination_images(query: str, per_page: int = 5) -> dict:
             "per_page": per_page,
             "orientation": "landscape",
         }
-        resp = requests.get(
+        resp = _api_session().get(
             config.UNSPLASH_SEARCH_URL,
             headers=headers,
             params=params,
@@ -134,8 +143,8 @@ def generate_itinerary(
     budget: str = "中等"
 ) -> dict:
     """
-    生成旅行行程计划（该工具返回结构化模板，由 Agent 在 LLM 侧深度规划）。
-    实际行程内容由 Agent 结合上下文生成，此工具提供结构骨架。
+    生成旅行行程计划。只返回城市中心坐标，具体景点由 LLM 文本推荐，
+    前端从文本中提取景点名后单独地理编码，确保地图标注与推荐一致。
 
     Args:
         destination: 目的地
@@ -144,14 +153,23 @@ def generate_itinerary(
         budget: 预算级别（经济/中等/豪华）
 
     Returns:
-        行程框架字典
+        行程框架字典（含城市中心坐标，供前端地图居中）
     """
+    # 只获取城市中心坐标，不自动搜 POI
+    geo_data = geocode_poi(destination)
+
     return {
         "success": True,
         "destination": destination,
         "days": days,
         "preferences": preferences,
         "budget": budget,
+        "map_data": {
+            "city_center": {
+                "lng": geo_data.get("lng", 0),
+                "lat": geo_data.get("lat", 0),
+            } if geo_data.get("success") else None,
+        },
         "structure": {
             "day_plan_template": {
                 "上午": "景点/活动 + 交通方式",
@@ -166,6 +184,94 @@ def generate_itinerary(
             ],
         },
     }
+
+
+def geocode_poi(address: str, city: str = "") -> dict:
+    """
+    将地点名称转为经纬度坐标（高德地理编码）。
+
+    Args:
+        address: 地点名称，如 "故宫博物院"、"西湖"
+        city: 所在城市（可选，缩小搜索范围）
+
+    Returns:
+        包含经纬度坐标的字典
+    """
+    try:
+        params = {
+            "key": config.AMAP_WEATHER_KEY,
+            "address": address,
+        }
+        if city:
+            params["city"] = city
+
+        resp = _api_session().get(config.AMAP_GEOCODE_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("status") != "1" or not data.get("geocodes"):
+            return {"success": False, "error": f"未找到地点: {address}"}
+
+        geo = data["geocodes"][0]
+        location = geo.get("location", "").split(",")
+        return {
+            "success": True,
+            "name": geo.get("name"),
+            "address": geo.get("formatted_address"),
+            "lng": float(location[0]) if len(location) > 0 else 0,
+            "lat": float(location[1]) if len(location) > 1 else 0,
+        }
+
+    except requests.RequestException as e:
+        return {"success": False, "error": f"网络请求失败: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": f"地理编码失败: {str(e)}"}
+
+
+def search_attractions(city: str, keywords: str = "景点", limit: int = 10) -> dict:
+    """
+    搜索城市的热门景点/地标（高德 POI 搜索）。
+
+    Args:
+        city: 城市名称
+        keywords: 搜索关键词，默认"景点"
+        limit: 返回数量
+
+    Returns:
+        包含景点列表的字典
+    """
+    try:
+        params = {
+            "key": config.AMAP_WEATHER_KEY,
+            "keywords": keywords,
+            "city": city,
+            "offset": limit,
+            "extensions": "all",
+        }
+        resp = _api_session().get(config.AMAP_POI_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("status") != "1":
+            return {"success": False, "error": f"POI搜索失败: {data.get('info')}"}
+
+        pois = []
+        for item in data.get("pois", []):
+            loc = item.get("location", "").split(",")
+            pois.append({
+                "name": item.get("name"),
+                "address": item.get("address"),
+                "lng": float(loc[0]) if len(loc) > 0 else 0,
+                "lat": float(loc[1]) if len(loc) > 1 else 0,
+                "type": item.get("type"),
+            })
+
+        return {"success": True, "city": city, "count": len(pois), "attractions": pois}
+
+    except requests.RequestException as e:
+        return {"success": False, "error": f"网络请求失败: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": f"景点搜索失败: {str(e)}"}
 
 
 # ========== 工具元数据（供 LLM Function Calling 使用） ==========
@@ -245,6 +351,52 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "geocode_poi",
+            "description": "将景点/地点名称转为经纬度坐标。在地图标注或计算路线时必须调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "address": {
+                        "type": "string",
+                        "description": "地点名称，如 '故宫博物院'、'西湖雷峰塔'",
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "所在城市，用于缩小搜索范围",
+                    },
+                },
+                "required": ["address"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_attractions",
+            "description": "搜索某个城市的热门景点/地标列表及坐标。当需要在地图上展示多个景点时必须调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "城市名称",
+                    },
+                    "keywords": {
+                        "type": "string",
+                        "description": "搜索关键词，如'景点'、'博物馆'、'公园'",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回数量，默认10",
+                    },
+                },
+                "required": ["city"],
+            },
+        },
+    },
 ]
 
 # 工具名称 → 实际函数的映射
@@ -252,4 +404,6 @@ TOOL_MAP = {
     "get_weather": get_weather,
     "search_destination_images": search_destination_images,
     "generate_itinerary": generate_itinerary,
+    "geocode_poi": geocode_poi,
+    "search_attractions": search_attractions,
 }

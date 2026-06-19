@@ -223,6 +223,22 @@ async def chat_stream(req: ChatRequest, request: Request):
     return resp
 
 
+@app.post("/api/geocode")
+async def geocode(req: ChatRequest):
+    """地理编码：地点名 → 经纬度（供地图使用）"""
+    from agent.tools import geocode_poi, search_attractions
+    msg = req.message.strip()
+    if not msg:
+        return {"success": False, "error": "请输入地点名称"}
+
+    # 判断是单个地点还是城市搜索
+    if msg.startswith("city:"):
+        city = msg[5:].strip()
+        return search_attractions(city)
+    else:
+        return geocode_poi(msg)
+
+
 @app.post("/api/reset")
 async def reset(request: Request):
     """重置当前 session 的对话历史"""
